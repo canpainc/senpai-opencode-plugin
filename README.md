@@ -2,7 +2,8 @@
 
 This plug-in makes one call before an OpenCode tool step. It sends the session
 id (`session_id`), the step id (`tool_call_id`) and the tool name (`tool_name`) to
-the one address supplied in its settings. One source file supports OpenCode 1
+the one address supplied in its settings. The native user-message id (`turn_id`)
+lets the server remind once per turn; synthetic reminders do not start a turn. One source file supports OpenCode 1
 and 2. A before-step call proves neither completion nor success.
 
 For SenpAI's own report step only, it also copies `c.w` to
@@ -25,12 +26,18 @@ person, and goes in the Authorization header, never the body or a log.
 Never put the company source/registration credential, gateway signing key,
 reporting-tool key or model-provider key in the plug-in options.
 
-There is one attempt per step, with a one-second timeout and no redirects or retry.
+There is one attempt per step, with a five-second timeout and no redirects or retry.
 The hook returns immediately, without waiting for a response.
+A successful response can carry the server's reporting reminder or steering
+text. The plug-in adds that text to the same OpenCode session without rejecting
+the tool or starting another model run. OpenCode keeps it in its normal history.
+The server decides whether to send it; the plug-in has no reporting rules.
+An error, timeout, invalid JSON or an unrecognized answer does nothing.
 A failed call does not stop the tool step. The server can therefore miss a call
 when it cannot be reached; this is not a durable delivery queue.
 
-OpenCode downloads the pinned package named in the company settings. On an
+OpenCode checks out the exact Git commit named in the company settings.
+Git must be available on the managed computer. On an
 empty cache, an unreachable download can delay OpenCode and leave the plug-in
 unloaded. That behavior belongs to OpenCode and is separate from the plug-in's
 call timeout.
@@ -41,7 +48,7 @@ no files to remove.
 
 For OpenCode 1, the settings entry is `[package, {endpoint, token}]` inside
 `plugin`. For OpenCode 2 it is `{package, options: {endpoint, token}}` inside
-`plugins`. Company settings supply the pinned download address and options.
+`plugins`. Company settings supply the Git HTTPS address, full commit hash and options.
 
 ## How to verify
 
@@ -50,6 +57,14 @@ contains that file byte for byte. Unpack the archive to compare it with the tag.
 Compare the SHA-256 of the archive your computers download with the checksum
 published beside the release. A SenpAI-served copy must have the same checksum.
 
-Your company may host the reviewed archive at its own internal address and use
-that address in the settings. Pin the version in the download address; OpenCode
-does not select a newer version by itself. Keep the file at that address unchanged.
+Set `opencode_plugin_package` on the server to
+`senpai-opencode-plugin@git+https://github.com/canpainc/senpai-opencode-plugin.git#<full-40-character-commit>`
+for the reviewed release, or use the same form for a company Git mirror.
+Both copied settings carry that exact revision. Tags and release-archive addresses
+are rejected: a publisher can replace an archive while keeping its address.
+OpenCode has no settings field that enforces an archive checksum. The commit pin
+selects the reviewed source; it does not detect edits to a developer-owned cache.
+
+The server step-route/settings changes need a server release. This package is
+released separately as v0.2.0 after review; publishing a package does not update
+company settings. IT pushes the new settings and restarts OpenCode.
