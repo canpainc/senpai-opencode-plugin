@@ -9,10 +9,10 @@ and 2. A before-step call proves neither completion nor success.
 For computers enrolled with LiteLLM, Setup also sets `modelAttempts`. On a model request the plug-in sends OpenCode’s session ID and a new request key to the same address. When it sees the provider’s ID in the reply, it sends that ID with the same request key. Failed calls keep their original key. The gateway supplies the price. The plug-in forwards the response to OpenCode as it arrives and inspects at most the first 32 KiB for the ID. Native trace and log export stay off.
 
 For SenpAI's own report step only, it also copies `c.w` to
-`reporting.work_handle` when it is a string of at most 64 characters.
-The server validates that handle and finds the report's action; the plug-in
-never derives an action or assigns a ticket. Missing, non-string or longer
-values are omitted. Legacy event IDs are never sent.
+`reporting.work_handle` when it has the issued format, a UUIDv7 in canonical
+unpadded base64url. An invalid reference stays on the computer. The server
+checks the reference and finds the report’s action. The plug-in never assigns
+a ticket or sends a legacy event ID.
 Only `senpai_report_events`, `senpai-report_events` and
 `mcp__senpai__report_events` carry references. Use the `senpai` reporting name
 in company settings. Other tools send only the three native fields.
@@ -46,7 +46,7 @@ call timeout.
 
 ## Windows rollout
 
-In Setup, connect the company’s LiteLLM gateway and copy the settings for each OpenCode major version in use. For the gateway download (`opencode-managed.json`), merge its `config` entries into `C:\ProgramData\opencode\opencode.json` and apply its `environment` entries to the OpenCode process. Keep a copy of the original machine policy and permissions. Give standard users read access and administrators or SYSTEM write access. Restart OpenCode, including the OpenCode 2 background service.
+In Setup, connect the company’s LiteLLM gateway. Copy the same settings for OpenCode 1 and 2. Merge these entries into `C:\ProgramData\opencode\opencode.json` on every computer. Before restarting OpenCode, clear `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` from its launch settings. Older Setup pages provide a separate `opencode-managed.json` for each version. With those files, apply the matching `config` and `environment` sections. Keep a copy of the original machine policy and permissions. Give standard users read access and administrators or SYSTEM write access. Restart OpenCode, including the OpenCode 2 background service.
 
 Set the model provider to the company gateway and distribute a separate gateway key per developer with the company’s credential system. Keep that key out of the shared file. Install the company CA in the Windows trust store if needed and apply the usual proxy and no-proxy settings for the gateway.
 
