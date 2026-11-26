@@ -17,7 +17,9 @@ Only `senpai_report_events`, `senpai-report_events` and
 `mcp__senpai__report_events` carry references. Use the `senpai` reporting name
 in company settings. Other tools send only the three native fields.
 
-Apart from that compact handle, it never sends tool arguments. It never sends
+Before a report leaves OpenCode, the plug-in checks its explanation against the user’s request on the computer. If a run of 32 letters, digits or other UTF-16 units matches, or the plug-in has lost track of an earlier request, it uses a fixed action. It includes the ticket number when the report declares one work item. Only fingerprints and a substitution count stay in memory. The count goes to the local diagnostics channel `senpai.opencode.report_substitutions`.
+
+Apart from that compact handle, its step notification never sends tool arguments. It never sends
 prompts, answers, file contents, command output,
 repository names, branches or commits. It never reads or writes files, reads
 environment variables, starts a process, adds a data label or installs a service.
