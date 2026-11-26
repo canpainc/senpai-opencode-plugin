@@ -1,10 +1,12 @@
 # SenpAI OpenCode plug-in
 
-This plug-in makes one call before an OpenCode tool step. It sends the session
+This plug-in reports each OpenCode tool step before it runs. It sends the session
 id (`session_id`), the step id (`tool_call_id`) and the tool name (`tool_name`) to
 the one address supplied in its settings. The native user-message id (`turn_id`)
 lets the server remind once per turn; synthetic reminders do not start a turn. One source file supports OpenCode 1
 and 2. A before-step call proves neither completion nor success.
+
+For computers enrolled with LiteLLM, Setup also sets `modelAttempts`. On a model request the plug-in sends OpenCode’s session ID and a new request key to the same address. When it sees the provider’s ID in the reply, it sends that ID with the same request key. Failed calls keep their original key. The gateway supplies the price. The plug-in forwards the response to OpenCode as it arrives and inspects at most the first 32 KiB for the ID. Native trace and log export stay off.
 
 For SenpAI's own report step only, it also copies `c.w` to
 `reporting.work_handle` when it is a string of at most 64 characters.
@@ -42,13 +44,15 @@ empty cache, an unreachable download can delay OpenCode and leave the plug-in
 unloaded. That behavior belongs to OpenCode and is separate from the plug-in's
 call timeout.
 
-Remove the entry from the company settings and restart OpenCode to stop calls.
-OpenCode can leave the downloaded package in its own cache. This plug-in creates
-no files to remove.
+## Windows rollout
 
-For OpenCode 1, the settings entry is `[package, {endpoint, token}]` inside
-`plugin`. For OpenCode 2 it is `{package, options: {endpoint, token}}` inside
-`plugins`. Company settings supply the Git HTTPS address, full commit hash and options.
+In Setup, connect the company’s LiteLLM gateway and copy the settings for each OpenCode major version in use. For the gateway download (`opencode-managed.json`), merge its `config` entries into `C:\ProgramData\opencode\opencode.json` and apply its `environment` entries to the OpenCode process. Keep a copy of the original machine policy and permissions. Give standard users read access and administrators or SYSTEM write access. Restart OpenCode, including the OpenCode 2 background service.
+
+Set the model provider to the company gateway and distribute a separate gateway key per developer with the company’s credential system. Keep that key out of the shared file. Install the company CA in the Windows trust store if needed and apply the usual proxy and no-proxy settings for the gateway.
+
+The managed gateway and default model take precedence over conflicting user, project and environment settings. Extra providers can still merge in. Limit selectable providers with `enabled_providers` on OpenCode 1 or `provider.use` policies on OpenCode 2. A developer can choose an allowed model on the command line. OpenCode 1 can skip external plug-ins in pure mode. Use company network and gateway controls when all requests must use that gateway. Administrators can change the machine policy.
+
+Start a session and check the issued key’s last use in Setup. After the cost round, compare the session’s charge with the developer’s gateway receipt. To remove the integration, restore the previous machine file, launch environment and access rules, revoke the retired SenpAI key in Setup, and restart OpenCode. Remove only the plug-in’s package from OpenCode’s own cache if IT requires a clean disk. The plug-in installs no service.
 
 ## How to verify
 
@@ -65,6 +69,6 @@ are rejected: a publisher can replace an archive while keeping its address.
 OpenCode has no settings field that enforces an archive checksum. The commit pin
 selects the reviewed source; it does not detect edits to a developer-owned cache.
 
-The server step-route/settings changes need a server release. This package is
-released separately as v0.2.0 after review; publishing a package does not update
+The server step-route/settings changes need a server release. The updated plug-in
+is released separately after review; publishing a package does not update
 company settings. IT pushes the new settings and restarts OpenCode.
