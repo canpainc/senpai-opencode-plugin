@@ -13,12 +13,20 @@ function post(options, body, onReply) {
   } catch {}
 }
 
+// R19: docs/attribution-rules.md#r19--incremental-accounting-preserves-request-history
+function validWorkHandle(value) {
+  if (typeof value !== 'string' || value.length !== 22) return false;
+  const bytes = Buffer.from(value, 'base64url');
+  return bytes.length === 16 && bytes.toString('base64url') === value &&
+    (bytes[6] >> 4) === 7 && (bytes[8] & 0xc0) === 0x80;
+}
+
 function send(options, session, step, tool, args, deliver, turn) {
   if ([session, step, tool].some(value => typeof value !== 'string' || !value)) return;
   const body = {session_id: session, tool_call_id: step, tool_name: tool};
   if (typeof turn === 'string' && turn) body.turn_id = turn;
   const handle = args?.c?.w;
-  if (reportTools.includes(tool) && typeof handle === 'string' && handle.length <= 64)
+  if (reportTools.includes(tool) && validWorkHandle(handle))
     body.reporting = {work_handle: handle};
   post(options, body, answer => {
     const hook = answer?.hookSpecificOutput;
@@ -39,11 +47,28 @@ function startAttempt(options, session, url, method) {
   } catch {}
 }
 
+// A large JSON response can have complete top-level fields before the inspection limit.
+function completeFields(text) {
+  let depth = 0, quoted = false, lastComma = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '\\') i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') {
+      if (--depth === 0) return text.slice(0, i + 1);
+    } else if (c === ',' && depth === 1) lastComma = i;
+  }
+  return lastComma < 0 ? '' : text.slice(0, lastComma) + '}';
+}
+
 function observeResponse(options, attempt, response) {
   if (!attempt || !response?.ok || !response.body || response.bodyUsed || response.body.locked) return response;
   const type = response.headers.get('content-type')?.split(';')[0].trim();
   if (type !== 'text/event-stream' && type !== 'application/json') return response;
-  // Observe the stream the caller actually consumes. Never clone, drain or retain its contents.
+  // Inspect a bounded prefix as the caller reads. Never clone or drain the response.
   const decoder = new TextDecoder();
   let pending = '', remaining = 32768;
   function inspect(chunk) {
@@ -51,7 +76,8 @@ function observeResponse(options, attempt, response) {
     const size = chunk?.byteLength ?? 0;
     pending += chunk ? decoder.decode(chunk.subarray(0, remaining), {stream:true}) : decoder.decode();
     remaining = Math.max(0, remaining - size);
-    const events = type === 'text/event-stream' ? pending.split(/\r?\n\r?\n/) : chunk ? [] : [pending];
+    if (type === 'application/json' && chunk && remaining) return;
+    const events = type === 'text/event-stream' ? pending.split(/\r?\n\r?\n/) : [chunk ? completeFields(pending) : pending];
     if (type === 'text/event-stream') pending = events.pop();
     for (const event of events) {
       const data = type === 'application/json' ? event : event.split(/\r?\n/)
