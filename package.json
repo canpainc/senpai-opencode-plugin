@@ -1,6 +1,6 @@
 {
   "name": "senpai-opencode-plugin",
-  "version": "0.3.2",
+  "version": "0.3.11",
   "private": true,
   "type": "module",
   "main": "index.js",
