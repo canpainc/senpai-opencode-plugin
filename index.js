@@ -4,7 +4,7 @@ import {channel} from 'node:diagnostics_channel';
 const reportTools = ['senpai_report_events', 'senpai-report_events', 'mcp__senpai__report_events'];
 
 // R29: docs/attribution-rules.md#r29--gateway-request-cost-and-work
-// Keep only local fingerprints of 32-unit runs. Long or unavailable requests use
+// Keep only local fingerprints of 32-unit runs. Long or unavailable histories use
 // the fixed description. Bound the work and memory on a fleet machine.
 function reportPrivacy() {
   const seen = new Map();
@@ -17,29 +17,41 @@ function reportPrivacy() {
     for (const hash of fingerprints(text)) if (hashes.has(hash)) return true;
     return false;
   }
-  function begin(session) {
+  function begin(session, firstMessageID) {
     if (!session || seen.has(session)) return;
     if (seen.size >= 16) seen.delete(seen.keys().next().value);
-    seen.set(session, new Set());
+    seen.set(session, {hashes:new Set(), firstMessageID});
   }
   function remember(session, texts) {
-    let hashes = seen.get(session);
+    const hashes = seen.get(session)?.hashes;
     if (!hashes) return;
+    let remaining = 8192;
     for (const text of texts) {
-      if (!hashes || typeof text !== 'string' || text.length > 8192) {
-        hashes = null;
-        break;
-      }
+      remaining -= typeof text === 'string' ? Math.max(1, text.length) : Infinity;
+      if (remaining < 0) { seen.set(session, null); return; }
       for (const hash of fingerprints(text)) {
         hashes.add(hash);
-        if (hashes.size > 8192) { hashes = null; break; }
+        if (hashes.size > 8192) { seen.set(session, null); return; }
       }
     }
-    seen.set(session, hashes);
   }
-  function protect(session, tool, args) {
+  async function rememberAnswers(context, event, first) {
+    let texts;
+    try {
+      const history = await context.session.context({sessionID:event.sessionID});
+      if (Array.isArray(history) && history.length <= 128 && history[0]?.type === 'user' &&
+          history[0].id === first && history.some(m => m.type === 'assistant' && m.id === event.messageID) &&
+          history.every(m => m.type === 'user' || (m.type === 'assistant' && Array.isArray(m.content) && m.content.length <= 128))) {
+        texts = history.filter(m => m.type === 'assistant').flatMap(m =>
+          m.content.filter(part => part.type === 'text' || part.type === 'reasoning').map(part => part.text));
+      }
+    } catch {} // An unavailable snapshot takes the same bounded fallback.
+    remember(event.sessionID, texts ?? [undefined]);
+    return Boolean(texts);
+  }
+  function protect(session, tool, args, complete = true) {
     if (!args || !reportTools.includes(tool)) return args;
-    const hashes = seen.get(session);
+    const hashes = complete && seen.get(session)?.hashes;
     function replace(body, field, verb, ticket) {
       const text = body?.[field];
       if (typeof text !== 'string' || !text) return body;
@@ -63,7 +75,11 @@ function reportPrivacy() {
     }
     return next;
   }
-  return {begin, remember, protect};
+  function before(event, check, run) {
+    const first = seen.get(event.sessionID)?.firstMessageID;
+    return first && reportTools.includes(event.tool) ? check(first).then(run, () => run(false)) : run(true);
+  }
+  return {begin, remember, rememberAnswers, before, protect};
 }
 
 // One address and credential from the issued settings. No queue or private retry.
@@ -200,9 +216,12 @@ export default {
         }
       }}),
       event: async ({event}) => {
-        const info = event.properties?.info;
-        if (event.type === 'session.created' && !info?.parentID) privacy.begin(info?.id);
+        const {info, part} = event.properties ?? {};
+        if (event.type === 'session.created' && !info?.parentID) privacy.begin(info?.id, info?.id);
+        if (event.type === 'message.part.updated' && part?.type === 'reasoning') privacy.remember(part.sessionID, [undefined]);
+        if (event.type === 'session.error') privacy.remember(event.properties.sessionID, [undefined]);
       },
+      'experimental.text.complete': async (input, output) => privacy.remember(input.sessionID, [output.text]),
       'chat.message': async (input, output) => {
         const parts = output.parts.filter(part => !part.synthetic);
         if (parts.length) {
@@ -210,11 +229,19 @@ export default {
           turns.set(input.sessionID, output.message.id);
         }
       },
-      'tool.execute.before': (input, output) => {
-        const args = privacy.protect(input.sessionID, input.tool, output?.args);
+      'tool.execute.before': (input, output) => privacy.before(input, async () => {
+        // V1 can call a tool during text and can finish reasoning without the text hook.
+        const {data} = await context.client.session.messages({path:{id:input.sessionID}, query:{limit:1}});
+        const msg = data?.at(-1);
+        if (!Array.isArray(msg?.parts) || msg.parts.length > 128) return false;
+        if (msg.parts.some(p => p.type === 'reasoning')) privacy.remember(input.sessionID, [undefined]);
+        return msg.info?.role === 'assistant' && msg.parts.some(p => p.type === 'tool' && p.callID === input.callID) &&
+          msg.parts.every(p => p.type !== 'text' || p.time?.end);
+      }, complete => {
+        const args = privacy.protect(input.sessionID, input.tool, output?.args, complete);
         if (args !== output?.args) Object.assign(output.args, args);
         send(options, input.sessionID, input.callID, input.tool, args, deliver, turns.get(input.sessionID));
-      },
+      }),
     };
   },
   async setup(context) {
@@ -232,7 +259,7 @@ export default {
           if (info.id === sessionID && !info.parentID && !info.fork && !info.time?.busy && !info.time?.idle) {
             const history = await context.session.context({sessionID});
             if (Array.isArray(history) && !history.length && turns.get(sessionID) === messageID)
-              privacy.begin(sessionID);
+              privacy.begin(sessionID, messageID);
           }
         } catch {} // An unavailable history keeps the fixed action.
       }
@@ -250,11 +277,12 @@ export default {
     }
     const deliver = (sessionID, text) => context.session.synthetic({sessionID, text,
       description: 'SenpAI reporting reminder', resume: false});
-    await context.tool.hook('execute.before', event => {
-      // OpenCode 2 freezes the nested MCP arguments. It accepts a replacement input.
-      const args = privacy.protect(event.sessionID, event.tool, event.input);
-      if (args !== event.input) event.input = args;
-      send(context.options, event.sessionID, event.id, event.tool, args, deliver, turns.get(event.sessionID));
-    });
+    await context.tool.hook('execute.before', event => privacy.before(event,
+      first => privacy.rememberAnswers(context, event, first), complete => {
+        // OpenCode 2 freezes nested MCP arguments and accepts a replacement input.
+        const args = privacy.protect(event.sessionID, event.tool, event.input, complete);
+        if (args !== event.input) event.input = args;
+        send(context.options, event.sessionID, event.id, event.tool, args, deliver, turns.get(event.sessionID));
+      }));
   },
 };
