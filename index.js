@@ -1,4 +1,70 @@
+import {createHash} from 'node:crypto';
+import {channel} from 'node:diagnostics_channel';
+
 const reportTools = ['senpai_report_events', 'senpai-report_events', 'mcp__senpai__report_events'];
+
+// R29: docs/attribution-rules.md#r29--gateway-request-cost-and-work
+// Keep only local fingerprints of 32-unit runs. Long or unavailable requests use
+// the fixed description. Bound the work and memory on a fleet machine.
+function reportPrivacy() {
+  const seen = new Map();
+  let substitutions = 0;
+  function* fingerprints(text) {
+    for (let i = 0; i + 32 <= text.length; i++)
+      yield createHash('sha256').update(text.slice(i, i + 32), 'utf16le').digest('base64');
+  }
+  function overlaps(hashes, text) {
+    for (const hash of fingerprints(text)) if (hashes.has(hash)) return true;
+    return false;
+  }
+  function begin(session) {
+    if (!session || seen.has(session)) return;
+    if (seen.size >= 16) seen.delete(seen.keys().next().value);
+    seen.set(session, new Set());
+  }
+  function remember(session, texts) {
+    let hashes = seen.get(session);
+    if (!hashes) return;
+    for (const text of texts) {
+      if (!hashes || typeof text !== 'string' || text.length > 8192) {
+        hashes = null;
+        break;
+      }
+      for (const hash of fingerprints(text)) {
+        hashes.add(hash);
+        if (hashes.size > 8192) { hashes = null; break; }
+      }
+    }
+    seen.set(session, hashes);
+  }
+  function protect(session, tool, args) {
+    if (!args || !reportTools.includes(tool)) return args;
+    const hashes = seen.get(session);
+    function replace(body, field, verb, ticket) {
+      const text = body?.[field];
+      if (typeof text !== 'string' || !text) return body;
+      if (hashes && text.length <= 8192 && !overlaps(hashes, text)) return body;
+      const target = typeof ticket === 'string' && /^#[1-9][0-9]{0,9}$/.test(ticket) ? ' on '+ticket : '';
+      channel('senpai.opencode.report_substitutions').publish(++substitutions);
+      return {...body, [field]: verb+' work'+target+'.'};
+    }
+    const c = args.c;
+    const target = Array.isArray(c?.t) && c.t.length === 1 ? c.t[0] : null;
+    const ticket = (!target?.k || target.k === 'w') && (!target?.r || target.r === 'w') ? target?.i : null;
+    const action = c?.p === 's' ? 'Started' : c?.p === 'd' ? 'Finished' : 'Reported';
+    const clean = replace(c, 'e', action, ticket);
+    let next = clean === c ? args : {...args, c: clean};
+    if (Array.isArray(args.events)) {
+      const events = args.events.map(event => {
+        const data = replace(event?.data, 'explanation', 'Reported');
+        return data === event?.data ? event : {...event, data};
+      });
+      if (events.some((event, i) => event !== args.events[i])) next = {...next, events};
+    }
+    return next;
+  }
+  return {begin, remember, protect};
+}
 
 // One address and credential from the issued settings. No queue or private retry.
 function post(options, body, onReply) {
@@ -110,6 +176,7 @@ export default {
   id: 'senpai',
   async server(context, options) {
     const turns = new Map();
+    const privacy = reportPrivacy();
     const deliver = (session, text) => context.client.session.prompt({path: {id: session},
       body: {noReply: true, parts: [{type: 'text', text, synthetic: true}]}});
     const wrapped = new WeakSet();
@@ -132,16 +199,45 @@ export default {
           wrapped.add(settings.fetch);
         }
       }}),
-      'chat.message': async (input, output) => {
-        if (output.parts.some(part => !part.synthetic)) turns.set(input.sessionID, output.message.id);
+      event: async ({event}) => {
+        const info = event.properties?.info;
+        if (event.type === 'session.created' && !info?.parentID) privacy.begin(info?.id);
       },
-      'tool.execute.before': (input, output) => send(options, input.sessionID, input.callID,
-        input.tool, output?.args, deliver, turns.get(input.sessionID)),
+      'chat.message': async (input, output) => {
+        const parts = output.parts.filter(part => !part.synthetic);
+        if (parts.length) {
+          privacy.remember(input.sessionID, parts.map(part => part.type === 'text' ? part.text : undefined));
+          turns.set(input.sessionID, output.message.id);
+        }
+      },
+      'tool.execute.before': (input, output) => {
+        const args = privacy.protect(input.sessionID, input.tool, output?.args);
+        if (args !== output?.args) Object.assign(output.args, args);
+        send(options, input.sessionID, input.callID, input.tool, args, deliver, turns.get(input.sessionID));
+      },
     };
   },
   async setup(context) {
     const turns = new Map();
-    await context.session?.hook?.('prompt', event => {turns.set(event.sessionID, event.messageID);});
+    const privacy = reportPrivacy();
+    await context.session?.hook?.('prompt', async event => {
+      const {sessionID, messageID} = event;
+      const first = !turns.has(sessionID);
+      turns.set(sessionID, messageID);
+      if (first) {
+        // The CLI may load the plug-in after creating the session. This hook runs
+        // before the new message is stored. Only an empty native history is new.
+        try {
+          const info = await context.session.get({sessionID});
+          if (info.id === sessionID && !info.parentID && !info.fork && !info.time?.busy && !info.time?.idle) {
+            const history = await context.session.context({sessionID});
+            if (Array.isArray(history) && !history.length && turns.get(sessionID) === messageID)
+              privacy.begin(sessionID);
+          }
+        } catch {} // An unavailable history keeps the fixed action.
+      }
+      privacy.remember(sessionID, [event.prompt?.text]);
+    });
     if (context.options?.modelAttempts === true) {
       const attempts = new WeakMap();
       await context.session.hook('http.request', event => {
@@ -155,7 +251,10 @@ export default {
     const deliver = (sessionID, text) => context.session.synthetic({sessionID, text,
       description: 'SenpAI reporting reminder', resume: false});
     await context.tool.hook('execute.before', event => {
-      send(context.options, event.sessionID, event.id, event.tool, event.input, deliver, turns.get(event.sessionID));
+      // OpenCode 2 freezes the nested MCP arguments. It accepts a replacement input.
+      const args = privacy.protect(event.sessionID, event.tool, event.input);
+      if (args !== event.input) event.input = args;
+      send(context.options, event.sessionID, event.id, event.tool, args, deliver, turns.get(event.sessionID));
     });
   },
 };
