@@ -1,6 +1,6 @@
 # SenpAI OpenCode plug-in
 
-This plug-in reports each OpenCode tool step before it runs. It sends the session
+This plug-in makes one call before an OpenCode tool step. It sends the session
 id (`session_id`), the step id (`tool_call_id`) and the tool name (`tool_name`) to
 the one address supplied in its settings. The native user-message id (`turn_id`)
 lets the server remind once per turn; synthetic reminders do not start a turn. One source file supports OpenCode 1
@@ -9,17 +9,14 @@ and 2. A before-step call proves neither completion nor success.
 For computers enrolled with LiteLLM, Setup also sets `modelAttempts`. On a model request the plug-in sends OpenCode’s session ID and a new request key to the same address. When it sees the provider’s ID in the reply, it sends that ID with the same request key. Failed calls keep their original key. The gateway supplies the price. The plug-in forwards the response to OpenCode as it arrives and inspects at most the first 32 KiB for the ID. Native trace and log export stay off.
 
 For SenpAI's own report step only, it also copies `c.w` to
-`reporting.work_handle` when it has the issued format, a UUIDv7 in canonical
-unpadded base64url. An invalid reference stays on the computer. The server
-checks the reference and finds the report’s action. The plug-in never assigns
-a ticket or sends a legacy event ID.
+`reporting.work_handle` for a UUIDv7 in canonical unpadded base64url.
+The server validates that handle and finds the report's action; the plug-in
+never derives an action or assigns a ticket. Invalid references stay local.
 Only `senpai_report_events`, `senpai-report_events` and
 `mcp__senpai__report_events` carry references. Use the `senpai` reporting name
 in company settings. Other tools send only the three native fields.
 
-Before a report leaves OpenCode, the plug-in checks its explanation against the user’s request or an earlier assistant answer on the computer. If a run of 32 letters, digits or other UTF-16 units matches, or the plug-in has lost track of an earlier request, it uses a fixed action. OpenCode 1 also uses the fixed action for the rest of a session when the model reasons. The action includes the declared ticket when available. Only fingerprints and a substitution count stay in memory. The count goes to the local diagnostics channel `senpai.opencode.report_substitutions`.
-
-Apart from that compact handle, its step notification never sends tool arguments. It never sends
+Apart from that compact handle, it never sends tool arguments. It never sends
 prompts, answers, file contents, command output,
 repository names, branches or commits. It never reads or writes files, reads
 environment variables, starts a process, adds a data label or installs a service.
@@ -46,6 +43,8 @@ empty cache, an unreachable download can delay OpenCode and leave the plug-in
 unloaded. That behavior belongs to OpenCode and is separate from the plug-in's
 call timeout.
 
+The plug-in checks the entire command or batch against the reporting fields before delivery. It refuses unknown fields and wrong types on the computer. OpenCode 2 can convert a text command to an object first. If the plug-in receives text, it stops the call and asks for an object. The client drops an invalid operation name before sending a compact report and uses the unnamed task for a legacy event. The computer checks names and other report fields for the reporting, native client and LiteLLM keys issued by Setup. It also checks names against the local conversation. It checks report explanations against the local conversation. A match of 32 UTF-16 units, a complete shorter text (including one copied without surrounding whitespace), incomplete history or a comparison beyond the local limit triggers fixed wording for the main explanation. The same check stops a report containing an unverifiable category, written defect ID or label, bug-origin reason or evidence locator. A UUID defect ID stays usable. Only fingerprints and a substitution count stay in memory. The local error names the field. The count is available on `senpai.opencode.report_substitutions`.
+
 ## Windows rollout
 
 In Setup, connect the company’s LiteLLM gateway. Copy the same settings for OpenCode 1 and 2. Merge these entries into `C:\ProgramData\opencode\opencode.json` on every computer. Before restarting OpenCode, clear `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` from its launch settings. Older Setup pages provide a separate `opencode-managed.json` for each version. With those files, apply the matching `config` and `environment` sections. Keep a copy of the original machine policy and permissions. Give standard users read access and administrators or SYSTEM write access. Restart OpenCode, including the OpenCode 2 background service.
@@ -70,7 +69,3 @@ Both copied settings carry that exact revision. Tags and release-archive address
 are rejected: a publisher can replace an archive while keeping its address.
 OpenCode has no settings field that enforces an archive checksum. The commit pin
 selects the reviewed source; it does not detect edits to a developer-owned cache.
-
-The server step-route/settings changes need a server release. The updated plug-in
-is released separately after review; publishing a package does not update
-company settings. IT pushes the new settings and restarts OpenCode.
