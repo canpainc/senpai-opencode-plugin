@@ -17,7 +17,7 @@ Only `senpai_report_events`, `senpai-report_events` and
 `mcp__senpai__report_events` carry references. Use the `senpai` reporting name
 in company settings. Other tools send only the three native fields.
 
-Before a report leaves OpenCode, the plug-in checks its explanation against the user’s request on the computer. If a run of 32 letters, digits or other UTF-16 units matches, or the plug-in has lost track of an earlier request, it uses a fixed action. It includes the ticket number when the report declares one work item. Only fingerprints and a substitution count stay in memory. The count goes to the local diagnostics channel `senpai.opencode.report_substitutions`.
+Before a report leaves OpenCode, the plug-in checks its explanation against the user’s request or an earlier assistant answer on the computer. If a run of 32 letters, digits or other UTF-16 units matches, or the plug-in has lost track of an earlier request, it uses a fixed action. OpenCode 1 also uses the fixed action for the rest of a session when the model reasons. The action includes the declared ticket when available. Only fingerprints and a substitution count stay in memory. The count goes to the local diagnostics channel `senpai.opencode.report_substitutions`.
 
 Apart from that compact handle, its step notification never sends tool arguments. It never sends
 prompts, answers, file contents, command output,
